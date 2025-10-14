@@ -26,20 +26,15 @@ class DropCalculator(Node):
         self.altitude = 0.0
         self.airspeed = 0.0
         self.groundspeed = 0.0
-        self.detected_color = None
-        self.calculation_enabled = False
-        self.calculation_done = False
+        self.calculation_active = False
         self.countdown_timer = None
         
         # Subscribers
         self.vfr_sub = self.create_subscription(
             VfrHud, '/mavros/vfr_hud', self.vfr_callback, qos_profile_sensor_data
         )
-        self.state_sub = self.create_subscription(
-            String, '/system/state', self.state_callback, 10
-        )
-        self.color_sub = self.create_subscription(
-            String, '/detection/color', self.color_callback, 10
+        self.calculate_sub = self.create_subscription(
+            Bool, '/drop/calculate', self.calculate_callback, 10  # NEW: Terima sinyal dari State Manager
         )
         
         # Publishers
@@ -47,7 +42,7 @@ class DropCalculator(Node):
         self.drop_info_pub = self.create_publisher(Vector3, '/drop/info', 10)
         self.gcs_pub = self.create_publisher(StatusText, '/mavros/statustext/send', 10)
         
-        self.get_logger().info('✅ Drop Calculator ready')
+        self.get_logger().info('✅ Drop Calculator ready (waiting for trigger)')
     
     def _validate_parameters(self):
         """Validate parameter ranges"""
@@ -74,65 +69,24 @@ class DropCalculator(Node):
         msg.text = f"DROP_CALC: {text}"
         self.gcs_pub.publish(msg)
     
-    def state_callback(self, msg):
-        """Handle state changes from State Manager"""
-        state = msg.data
+    def calculate_callback(self, msg):
+        """Terima sinyal dari State Manager untuk mulai hitung"""
+        if not msg.data or self.calculation_active:
+            return
         
-        if state == 'DETECTING':
-            # Reset saat mulai deteksi baru
-            self.detected_color = None
-            self.calculation_enabled = False
-            self.calculation_done = False
-            
-            # Cancel countdown jika ada
-            if self.countdown_timer:
-                self.get_logger().warn('⚠️ Cancelling countdown (new detection)')
-                self.countdown_timer.cancel()
-                self.countdown_timer = None
+        self.get_logger().info('🚀 Calculation triggered by State Manager')
+        self.send_to_gcs('Starting calculation...')
         
-        elif state == 'DROPPING':
-            # State Manager sudah putuskan untuk drop
-            # Drop Calculator hanya execute countdown
-            pass
+        self.calculation_active = True
         
-        else:
-            # State lain (IDLE, WAITING_WAYPOINT)
-            if self.calculation_enabled:
-                self.get_logger().info('📴 Drop calculation DISABLED')
-            
-            self.calculation_enabled = False
-            self.calculation_done = False
-            self.detected_color = None
-            
-            # Cancel countdown jika ada
-            if self.countdown_timer:
-                self.get_logger().warn('⚠️ Cancelling countdown (state change)')
-                self.countdown_timer.cancel()
-                self.countdown_timer = None
-    
-    def color_callback(self, msg):
-        """Handle color detection from Color Detector"""
-        color = msg.data
-        self.detected_color = color.upper()
-        
-        # Enable calculation setelah warna terdeteksi
-        if not self.calculation_enabled:
-            self.calculation_enabled = True
-            self.calculation_done = False
-            self.get_logger().info(f'🎨 Color detected: {self.detected_color} - Calculation ENABLED')
-            self.send_to_gcs(f'{self.detected_color} detected - Ready to calculate')
+        # Langsung hitung dengan data VFR terakhir
+        self.calculate_drop()
     
     def vfr_callback(self, msg):
         """Update vehicle flight data"""
         self.altitude = msg.altitude
         self.airspeed = msg.airspeed
         self.groundspeed = msg.groundspeed
-        
-        # Only calculate if:
-        # 1. Calculation enabled (warna sudah terdeteksi)
-        # 2. Belum pernah calculate (prevent re-calculation)
-        if self.calculation_enabled and not self.calculation_done:
-            self.calculate_drop()
     
     def calculate_drop(self):
         """Calculate drop timing and execute countdown"""
@@ -150,6 +104,7 @@ class DropCalculator(Node):
                 f'⚠️ Altitude too low: {self.altitude:.1f}m < {min_alt}m'
             )
             self.send_to_gcs(f'Alt too low: {self.altitude:.1f}m')
+            self.calculation_active = False
             return
         
         if self.altitude > max_alt:
@@ -157,6 +112,7 @@ class DropCalculator(Node):
                 f'⚠️ Altitude too high: {self.altitude:.1f}m > {max_alt}m'
             )
             self.send_to_gcs(f'Alt too high: {self.altitude:.1f}m')
+            self.calculation_active = False
             return
         
         # Select speed (prefer airspeed)
@@ -167,6 +123,7 @@ class DropCalculator(Node):
                 f'⚠️ Speed too low: {speed:.1f}m/s < {min_speed}m/s'
             )
             self.send_to_gcs(f'Speed too low: {speed:.1f}m/s')
+            self.calculation_active = False
             return
         
         # Calculate free fall time: t = sqrt(2h/g)
@@ -182,6 +139,7 @@ class DropCalculator(Node):
                 f'payload will overshoot!'
             )
             self.send_to_gcs(f'Drop dist {d_drop:.1f}m too short!')
+            self.calculation_active = False
             return
         
         time_to_drop = (d_drop - target_dist) / speed
@@ -189,6 +147,7 @@ class DropCalculator(Node):
         # Sanity check
         if time_to_drop <= 0:
             self.get_logger().error('❌ Calculated time_to_drop ≤ 0, skipping')
+            self.calculation_active = False
             return
         
         # Publish drop info (untuk monitoring/debugging)
@@ -209,29 +168,26 @@ class DropCalculator(Node):
             f'Countdown {time_to_drop:.1f}s (alt={self.altitude:.0f}m, spd={speed:.1f}m/s)'
         )
         
-        # Mark calculation as done to prevent re-calculation
-        self.calculation_done = True
-        
         # Start countdown timer
         self.start_countdown(time_to_drop)
     
     def start_countdown(self, delay):
         """Start countdown timer"""
         
-        # Double-check no active timer (safety)
+        # Cancel any existing timer (safety)
         if self.countdown_timer:
-            self.get_logger().error('❌ Timer already active! This should not happen.')
-            return
+            self.countdown_timer.cancel()
+            self.countdown_timer = None
         
-        self.get_logger().info(f'🚀 Countdown started: {delay:.2f} seconds')
+        self.get_logger().info(f'⏱️ Countdown started: {delay:.2f} seconds')
         self.countdown_timer = self.create_timer(delay, self.execute_drop)
     
     def execute_drop(self):
         """Execute drop command"""
         self.get_logger().info('💥 EXECUTING DROP!')
-        self.send_to_gcs(f'DROP NOW! ({self.detected_color})')
+        self.send_to_gcs('DROP NOW!')
         
-        # Send drop command
+        # Send drop command to Servo Controller
         cmd = Bool()
         cmd.data = True
         self.drop_cmd_pub.publish(cmd)
@@ -241,8 +197,7 @@ class DropCalculator(Node):
             self.countdown_timer.cancel()
             self.countdown_timer = None
         
-        self.calculation_enabled = False
-        self.calculation_done = False
+        self.calculation_active = False
 
 def main(args=None):
     rclpy.init(args=args)

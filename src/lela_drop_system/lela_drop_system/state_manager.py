@@ -10,25 +10,26 @@ class SystemState(Enum):
     IDLE = 0
     WAITING_WAYPOINT = 1
     DETECTING = 2
-    DROPPING = 3
+    CALCULATING = 3
+    DROPPING = 4
 
 class StateManager(Node):
     def __init__(self):
         super().__init__('state_manager')
         
-        self.declare_parameter('drop_waypoint', 2)
-        self.declare_parameter('detection_timeout', 20.0)
+        self.declare_parameter('drop_waypoint', 1)
+        self.declare_parameter('detection_timeout', 30.0)
         
         self.drop_waypoint = self.get_parameter('drop_waypoint').value
         self.detection_timeout = self.get_parameter('detection_timeout').value
         
-        # Publisher
+        # Publishers
         self.state_pub = self.create_publisher(String, '/system/state', 10)
-        self.drop_cmd_pub = self.create_publisher(Bool, '/drop/execute', 10)
         self.gcs_pub = self.create_publisher(StatusText, '/mavros/statustext/send', 10)
         self.detection_enable_pub = self.create_publisher(Bool, '/detection/enable', 10)
+        self.calculate_pub = self.create_publisher(Bool, '/drop/calculate', 10)  # NEW
         
-        # Subscriber
+        # Subscribers
         self.wp_sub = self.create_subscription(
             Int16, '/mission/waypoint_reached', self.waypoint_callback, 10
         )
@@ -59,6 +60,13 @@ class StateManager(Node):
         msg.data = enable
         self.detection_enable_pub.publish(msg)
     
+    def trigger_calculation(self):
+        """Kirim sinyal ke Drop Calculator untuk mulai hitung"""
+        msg = Bool()
+        msg.data = True
+        self.calculate_pub.publish(msg)
+        self.get_logger().info('📊 Triggering Drop Calculator...')
+    
     def transition_to(self, new_state):
         if self.timeout_timer:
             self.timeout_timer.cancel()
@@ -86,18 +94,18 @@ class StateManager(Node):
                 self.detection_timeout, 
                 self.on_detection_timeout
             )
+        
+        elif new_state == SystemState.CALCULATING:
+            self.enable_detection(False)  # Matikan kamera saat hitung
+            self.send_to_gcs(f"WP{self.current_waypoint}: Calculating drop...")
     
     def on_detection_timeout(self):
         if self.current_state == SystemState.DETECTING:
             self.get_logger().warn(f'⏱️ Detection timeout at WP{self.current_waypoint}')
             self.send_to_gcs(f"WP{self.current_waypoint}: No target (timeout)")
             
-            if self.current_waypoint == self.drop_waypoint:
-                self.get_logger().info('⚠️ Forcing drop despite timeout')
-                self.send_to_gcs(f"WP{self.drop_waypoint}: Forcing drop")
-                self.execute_drop()
-            else:
-                self.transition_to(SystemState.WAITING_WAYPOINT)
+            # Kembali ke waiting (tidak force drop)
+            self.transition_to(SystemState.WAITING_WAYPOINT)
     
     def waypoint_callback(self, msg):
         if self.current_state != SystemState.WAITING_WAYPOINT:
@@ -121,29 +129,22 @@ class StateManager(Node):
         self.send_to_gcs(f"WP{self.current_waypoint}: {color} detected")
         
         if self.current_waypoint == self.drop_waypoint:
-            self.execute_drop()
+            # Transisi ke CALCULATING dan kirim sinyal ke Drop Calculator
+            self.transition_to(SystemState.CALCULATING)
+            self.trigger_calculation()
         else:
             self.get_logger().info(f'ℹ️ WP{self.current_waypoint} is not drop point')
             self.transition_to(SystemState.WAITING_WAYPOINT)
     
-    def execute_drop(self):
-        self.get_logger().info(f'💣 Executing drop at WP{self.current_waypoint}')
-        self.transition_to(SystemState.DROPPING)
-        
-        self.enable_detection(False)
-        
-        cmd = Bool()
-        cmd.data = True
-        self.drop_cmd_pub.publish(cmd)
-    
     def drop_done_callback(self, msg):
-        if not msg.data or self.current_state != SystemState.DROPPING:
+        if not msg.data:
             return
         
-        self.get_logger().info('✅ Drop completed successfully')
-        self.send_to_gcs(f"WP{self.current_waypoint}: Drop successful ({self.detected_color})")
-        
-        self.transition_to(SystemState.WAITING_WAYPOINT)
+        # Terima konfirmasi dari Servo Controller
+        if self.current_state == SystemState.CALCULATING or self.current_state == SystemState.DROPPING:
+            self.get_logger().info('✅ Drop completed successfully')
+            self.send_to_gcs(f"WP{self.current_waypoint}: Drop successful ({self.detected_color})")
+            self.transition_to(SystemState.WAITING_WAYPOINT)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -157,4 +158,4 @@ def main(args=None):
         rclpy.shutdown()
 
 if __name__ == '__main__':
-    main()  
+    main()

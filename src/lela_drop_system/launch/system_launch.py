@@ -5,6 +5,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
+        # Camera Node
         Node(
             package='v4l2_camera',
             executable='v4l2_camera_node',
@@ -16,6 +17,7 @@ def generate_launch_description():
             output='screen'
         ),
         
+        # Color Detector
         Node(
             package='lela_drop_system',
             executable='color_detector.py',
@@ -24,6 +26,7 @@ def generate_launch_description():
             output='screen'
         ),
         
+        # Mission Monitor
         Node(
             package='lela_drop_system',
             executable='mission_monitor.py',
@@ -31,6 +34,7 @@ def generate_launch_description():
             output='screen'
         ),
         
+        # State Manager (UPDATED)
         Node(
             package='lela_drop_system',
             executable='state_manager.py',
@@ -42,6 +46,22 @@ def generate_launch_description():
             output='screen'
         ),
         
+        # Drop Calculator (UPDATED)
+        Node(
+            package='lela_drop_system',
+            executable='drop_calculator.py',
+            name='drop_calculator',
+            parameters=[{
+                'gravity': 9.81,
+                'target_distance': 2.0,
+                'min_altitude': 10.0,
+                'max_altitude': 100.0,
+                'min_airspeed': 5.0,
+            }],
+            output='screen'
+        ),
+        
+        # Servo Controller
         Node(
             package='lela_drop_system',
             executable='servo_controller.py',
