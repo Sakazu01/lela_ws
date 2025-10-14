@@ -27,6 +27,7 @@ setup(
             'mission_monitor.py = lela_drop_system.mission_monitor:main',
             'state_manager.py = lela_drop_system.state_manager:main',
             'servo_controller.py = lela_drop_system.servo_controller:main',
+            'drop_calculator.py = lela_drop_system.drop_calculator:main',
         ],
     },
 )
