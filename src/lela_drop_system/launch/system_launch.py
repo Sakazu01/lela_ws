@@ -40,7 +40,7 @@ def generate_launch_description():
             executable='state_manager.py',
             name='state_manager',
             parameters=[{
-                'drop_waypoint': 1,
+                'drop_waypoint': 0,
                 'detection_timeout': 30.0,
             }],
             output='screen'
@@ -67,7 +67,7 @@ def generate_launch_description():
             executable='servo_controller.py',
             name='servo_controller',
             parameters=[{
-                'servo_channel': 2,
+                'servo_channel': 5,
                 'pwm_drop': 1900,
                 'pwm_hold': 1100,
                 'reset_delay': 2.0,
