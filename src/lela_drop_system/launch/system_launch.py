@@ -22,7 +22,10 @@ def generate_launch_description():
             package='lela_drop_system',
             executable='color_detector.py',
             name='color_detector',
-            parameters=[{'min_area': 3000}],
+            parameters=[
+                {'fallback_color': 'RED'},  # atau 'BLUE'
+                {'status_log_period': 1.5}                
+            ],
             output='screen'
         ),
         
@@ -53,7 +56,7 @@ def generate_launch_description():
             name='drop_calculator',
             parameters=[{
                 'gravity': 9.81,
-		'target_lat': -0.8787417,  # contoh koordinat target
+		    'target_lat': -0.8787417,  # contoh koordinat target
                 'target_lon': 100.3478323,
             }],
             output='screen'
