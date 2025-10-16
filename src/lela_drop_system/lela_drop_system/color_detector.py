@@ -164,43 +164,46 @@ class ColorDetectorTarp(Node):
 
     def _finalize_session(self):
         use_area = bool(self.get_parameter('use_area_weight').value)
-        winner: Optional[str] = None
-        confidence: float = 0.0
 
-        total_area = self.red_area_sum + self.blue_area_sum
-        if use_area and total_area > 0:
-            if self.red_area_sum > self.blue_area_sum:
-                winner = 'red'
-                confidence = self.red_area_sum / total_area
-            elif self.blue_area_sum > self.red_area_sum:
-                winner = 'blue'
-                confidence = self.blue_area_sum / total_area
+        # Decide winner by area or votes
+        if use_area:
+            total_area = self.red_area_sum + self.blue_area_sum
+            if total_area > 0:
+                if self.red_area_sum > self.blue_area_sum:
+                    winner, confidence = 'red', self.red_area_sum / total_area
+                elif self.blue_area_sum > self.red_area_sum:
+                    winner, confidence = 'blue', self.blue_area_sum / total_area
+                else:
+                    # tie → default to red
+                    winner, confidence = 'red', 0.0
+            else:
+                # no counted area at all → default to red
+                winner, confidence = 'red', 0.0
         else:
             total_votes = self.red_frames + self.blue_frames
             if total_votes > 0:
                 if self.red_frames > self.blue_frames:
-                    winner = 'red'
-                    confidence = self.red_frames / total_votes
+                    winner, confidence = 'red', self.red_frames / total_votes
                 elif self.blue_frames > self.red_frames:
-                    winner = 'blue'
-                    confidence = self.blue_frames / total_votes
+                    winner, confidence = 'blue', self.blue_frames / total_votes
+                else:
+                    # tie → default to red
+                    winner, confidence = 'red', 0.0
+            else:
+                # no votes at all → default to red
+                winner, confidence = 'red', 0.0
 
-        if winner:
-            out = String(); out.data = winner
-            self.color_pub.publish(out)
-            self.get_logger().info(
-                f'✅ Session result: {winner.upper()} | conf={confidence:.2f} '
-                f'| votes R/B={self.red_frames}/{self.blue_frames} '
-                f'| area R/B={self.red_area_sum}/{self.blue_area_sum} '
-                f'| frames processed={self._frames_processed}, counted={self._frames_counted}'
-            )
-            self.send_to_gcs(f'Session result: {winner.upper()} (conf={confidence:.2f})')
-        else:
-            self.get_logger().info(
-                f'❓ Session result: NONE (no confident red/blue seen) '
-                f'| frames processed={self._frames_processed}'
-            )
-            self.send_to_gcs('Session result: NONE')
+        # Publish result (always)
+        out = String(); out.data = winner
+        self.color_pub.publish(out)
+        self.get_logger().info(
+            f'✅ Session result: {winner.upper()} | conf={confidence:.2f} '
+            f'| votes R/B={self.red_frames}/{self.blue_frames} '
+            f'| area R/B={self.red_area_sum}/{self.blue_area_sum} '
+            f'| frames processed={self._frames_processed}, counted={self._frames_counted}'
+        )
+        self.send_to_gcs(f'Session result: {winner.upper()} (conf={confidence:.2f})')
+
 
     # ---------- Callbacks ----------
     def enable_cb(self, msg: Bool):

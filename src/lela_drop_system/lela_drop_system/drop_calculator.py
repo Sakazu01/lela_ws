@@ -3,210 +3,185 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import String, Bool
+from std_msgs.msg import Bool
 from mavros_msgs.msg import VfrHud, StatusText
 from geometry_msgs.msg import Vector3
+from sensor_msgs.msg import NavSatFix
 import math
 
-class DropCalculator(Node):
-    def __init__(self):
-        super().__init__('drop_calculator')
-        
-        # Parameters
-        self.declare_parameter('gravity', 9.81)
 
-        
-        # Validate parameters
-        self._validate_parameters()
-        
-        # State variables
+class DropCalculatorGPS(Node):
+    def __init__(self):
+        super().__init__('drop_calculator_gps')
+
+        # ===== PARAMETER =====
+        self.declare_parameter('gravity', 9.81)
+        self.declare_parameter('target_lat', 0.0)
+        self.declare_parameter('target_lon', 0.0)
+
+        # ===== STATE =====
         self.altitude = 0.0
-        self.airspeed = 0.0
         self.groundspeed = 0.0
+        self.drone_lat = None
+        self.drone_lon = None
         self.calculation_active = False
-        self.countdown_timer = None
-        
-        # Subscribers
+        self.drop_executed = False
+
+        # ===== SUBSCRIBERS =====
         self.vfr_sub = self.create_subscription(
             VfrHud, '/mavros/vfr_hud', self.vfr_callback, qos_profile_sensor_data
         )
-        self.calculate_sub = self.create_subscription(
-            Bool, '/drop/calculate', self.calculate_callback, 10  # NEW: Terima sinyal dari State Manager
+        self.gps_sub = self.create_subscription(
+            NavSatFix, '/mavros/global_position/global', self.gps_callback, qos_profile_sensor_data
         )
-        
-        # Publishers
+        self.calculate_sub = self.create_subscription(
+            Bool, '/drop/calculate', self.calculate_callback, 10
+        )
+
+        # ===== PUBLISHERS =====
         self.drop_cmd_pub = self.create_publisher(Bool, '/drop/execute', 10)
         self.drop_info_pub = self.create_publisher(Vector3, '/drop/info', 10)
         self.gcs_pub = self.create_publisher(StatusText, '/mavros/statustext/send', 10)
-        
-        self.get_logger().info('✅ Drop Calculator ready (waiting for trigger)')
 
-    def _validate_parameters(self):
-        """Validate parameter ranges"""
-        min_alt = self.get_parameter('min_altitude').value
-        max_alt = self.get_parameter('max_altitude').value
-        min_speed = self.get_parameter('min_airspeed').value
-        
-        if min_alt >= max_alt:
-            raise ValueError(
-                f'min_altitude ({min_alt}) must be < max_altitude ({max_alt})'
-            )
-        
-        if min_speed <= 0:
-            raise ValueError(f'min_airspeed must be > 0')
-        
-        self.get_logger().info(
-            f'📐 Altitude range: {min_alt}-{max_alt}m, Min speed: {min_speed}m/s'
-        )
-    
-    def send_to_gcs(self, text):
-        """Send message to GCS"""
-        msg = StatusText()
-        msg.severity = 6  # INFO level
-        msg.text = f"DROP_CALC: {text}"
-        self.gcs_pub.publish(msg)
-    
-    def calculate_callback(self, msg):
-        """Terima sinyal dari State Manager untuk mulai hitung"""
-        if not msg.data or self.calculation_active:
-            return
-        
-        self.get_logger().info('🚀 Calculation triggered by State Manager')
-        self.send_to_gcs('Starting calculation...')
-        
-        self.calculation_active = True
-        
-        # Langsung hitung dengan data VFR terakhir
-        self.calculate_drop()
-    
-    def vfr_callback(self, msg):
-        """Update vehicle flight data"""
+        self.get_logger().info('✅ Drop Calculator GPS-based ready!')
+
+    # ------------------------------------------------------------------
+    def gps_callback(self, msg: NavSatFix):
+        self.drone_lat = msg.latitude
+        self.drone_lon = msg.longitude
+
+    def vfr_callback(self, msg: VfrHud):
         self.altitude = msg.altitude
-        self.airspeed = msg.airspeed
         self.groundspeed = msg.groundspeed
-    
+
+    def send_to_gcs(self, text):
+        msg = StatusText()
+        msg.severity = 6
+        msg.text = f"DROP: {text}"
+        self.gcs_pub.publish(msg)
+
+    # ------------------------------------------------------------------
+    def calculate_callback(self, msg):
+        if not msg.data or self.calculation_active or self.drop_executed:
+            return
+        if self.drone_lat is None or self.drone_lon is None:
+            self.get_logger().warn('⚠️ Waiting for GPS fix...')
+            return
+
+        self.get_logger().info('🚀 Drop calculation triggered!')
+        self.send_to_gcs('Calculating GPS-based drop point...')
+        self.calculation_active = True
+
+        self.calculate_drop()
+
+    # ------------------------------------------------------------------
     def calculate_drop(self):
-        """Calculate drop timing and execute countdown"""
-        
-        # Get parameters
         g = self.get_parameter('gravity').value
-        target_dist = self.get_parameter('target_distance').value
-        min_alt = self.get_parameter('min_altitude').value
-        max_alt = self.get_parameter('max_altitude').value
-        min_speed = self.get_parameter('min_airspeed').value
-        
-        # Validate altitude
-        if self.altitude < min_alt:
-            self.get_logger().warn(
-                f'⚠️ Altitude too low: {self.altitude:.1f}m < {min_alt}m'
-            )
-            self.send_to_gcs(f'Alt too low: {self.altitude:.1f}m')
+        h = self.altitude
+        v = self.groundspeed
+
+        h = (h * h) + 10
+        v = 0.2
+
+        if h <= 0 or v <= 0:
+            self.get_logger().warn('⚠️ Invalid flight data')
             self.calculation_active = False
             return
-        
-        if self.altitude > max_alt:
-            self.get_logger().warn(
-                f'⚠️ Altitude too high: {self.altitude:.1f}m > {max_alt}m'
-            )
-            self.send_to_gcs(f'Alt too high: {self.altitude:.1f}m')
-            self.calculation_active = False
-            return
-        
-        # Select speed (prefer airspeed)
-        speed = self.airspeed if self.airspeed >= min_speed else self.groundspeed
-        
-        if speed < min_speed:
-            self.get_logger().warn(
-                f'⚠️ Speed too low: {speed:.1f}m/s < {min_speed}m/s'
-            )
-            self.send_to_gcs(f'Speed too low: {speed:.1f}m/s')
-            self.calculation_active = False
-            return
-        
-        # Calculate free fall time: t = sqrt(2h/g)
-        t_fall = math.sqrt((2 * self.altitude) / g)
-        
-        # Calculate horizontal distance during fall: d = v * t
-        d_drop = speed * t_fall
-        
-        # Calculate time until drop point
-        if d_drop <= target_dist:
-            self.get_logger().warn(
-                f'⚠️ Drop distance {d_drop:.1f}m ≤ target {target_dist}m - '
-                f'payload will overshoot!'
-            )
-            self.send_to_gcs(f'Drop dist {d_drop:.1f}m too short!')
-            self.calculation_active = False
-            return
-        
-        time_to_drop = (d_drop - target_dist) / speed
-        
-        # Sanity check
-        if time_to_drop <= 0:
-            self.get_logger().error('❌ Calculated time_to_drop ≤ 0, skipping')
-            self.calculation_active = False
-            return
-        
-        # Publish drop info (untuk monitoring/debugging)
+
+        # Hitung waktu jatuh bebas
+        t_fall = math.sqrt((2 * h) / g)
+        lead_distance = v * t_fall
+
+        # Hitung jarak ke target dari posisi GPS
+        target_lat = self.get_parameter('target_lat').value
+        target_lon = self.get_parameter('target_lon').value
+
+        current_distance = self.haversine(self.drone_lat, self.drone_lon, target_lat, target_lon)
+
         info = Vector3()
-        info.x = time_to_drop
-        info.y = d_drop
-        info.z = self.altitude
+        info.x = current_distance
+        info.y = lead_distance
+        info.z = h
         self.drop_info_pub.publish(info)
-        
+
         self.get_logger().info(
-            f'📊 Drop calculation: '
-            f't_fall={t_fall:.2f}s, '
-            f'd_drop={d_drop:.1f}m, '
-            f'countdown={time_to_drop:.2f}s'
+            f'\n===== DROP CALCULATION =====\n'
+            f'Altitude: {h:.1f} m\n'
+            f'Groundspeed: {v:.1f} m/s\n'
+            f'Lead Distance: {lead_distance:.1f} m\n'
+            f'Distance to Target: {current_distance:.1f} m\n'
+            f'============================='
         )
-        
-        self.send_to_gcs(
-            f'Countdown {time_to_drop:.1f}s (alt={self.altitude:.0f}m, spd={speed:.1f}m/s)'
-        )
-        
-        # Start countdown timer
-        self.start_countdown(time_to_drop)
-    
-    def start_countdown(self, delay):
-        """Start countdown timer"""
-        
-        # Cancel any existing timer (safety)
-        if self.countdown_timer:
-            self.countdown_timer.cancel()
-            self.countdown_timer = None
-        
-        self.get_logger().info(f'⏱️ Countdown started: {delay:.2f} seconds')
-        self.countdown_timer = self.create_timer(delay, self.execute_drop)
-    
+
+        self.send_to_gcs(f'Lead {lead_distance:.0f}m | Dist {current_distance:.0f}m')
+
+        # Jika jarak <= lead distance → drop sekarang
+        if current_distance <= lead_distance:
+            self.execute_drop()
+        else:
+            self.get_logger().info('⏳ Target masih jauh, menunggu jarak sesuai...')
+            self.create_timer(1.0, self.monitor_distance)
+
+    # ------------------------------------------------------------------
+    def monitor_distance(self):
+        if self.drop_executed or self.drone_lat is None:
+            return
+
+        target_lat = self.get_parameter('target_lat').value
+        target_lon = self.get_parameter('target_lon').value
+        g = self.get_parameter('gravity').value
+        h = self.altitude
+        v = self.groundspeed
+
+        if h <= 0 or v <= 0:
+            return
+
+        lead_distance = v * math.sqrt((2 * h) / g)
+        current_distance = self.haversine(self.drone_lat, self.drone_lon, target_lat, target_lon)
+        self.get_logger().info('menunggu drop -1 detik')
+        if current_distance <= lead_distance:
+            self.execute_drop()
+
+    # ------------------------------------------------------------------
     def execute_drop(self):
-        """Execute drop command"""
-        self.get_logger().info('💥 EXECUTING DROP!')
-        self.send_to_gcs('DROP NOW!')
-        
-        # Send drop command to Servo Controller
+        if self.drop_executed:
+            return
+
+        self.drop_executed = True
         cmd = Bool()
         cmd.data = True
         self.drop_cmd_pub.publish(cmd)
-        
-        # Cleanup
-        if self.countdown_timer:
-            self.countdown_timer.cancel()
-            self.countdown_timer = None
-        
+        self.send_to_gcs('💥 DROP EXECUTED!')
+        self.get_logger().info('💥 DROP EXECUTED!')
         self.calculation_active = False
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def haversine(lat1, lon1, lat2, lon2):
+        """Hitung jarak meter antar dua koordinat"""
+        R = 6371000.0
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        return R * c
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = DropCalculator()
-    
+    node = DropCalculatorGPS()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('🛑 Shutting down Drop Calculator...')
+        node.get_logger().info('🛑 Shutting down...')
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

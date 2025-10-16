@@ -53,10 +53,8 @@ def generate_launch_description():
             name='drop_calculator',
             parameters=[{
                 'gravity': 9.81,
-                'target_distance': 2.0,
-                'min_altitude': 10.0,
-                'max_altitude': 100.0,
-                'min_airspeed': 5.0,
+		'target_lat': -0.8787417,  # contoh koordinat target
+                'target_lon': 100.3478323,
             }],
             output='screen'
         ),
@@ -67,9 +65,9 @@ def generate_launch_description():
             executable='servo_controller.py',
             name='servo_controller',
             parameters=[{
-                'servo_channel': 5,
-                'pwm_drop': 1900,
-                'pwm_hold': 1100,
+                'servo_channel': 7,
+                'pwm_drop': 2200,
+                'pwm_hold': 800,
                 'reset_delay': 2.0,
             }],
             output='screen'

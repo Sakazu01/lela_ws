@@ -11,9 +11,9 @@ class ServoController(Node):
         super().__init__('servo_controller')
 
         # === Parameters (unchanged) ===
-        self.declare_parameter('servo_channel', 5)
-        self.declare_parameter('pwm_drop', 1800)
-        self.declare_parameter('pwm_hold', 1200)
+        self.declare_parameter('servo_channel', 7)
+        self.declare_parameter('pwm_drop', 2200)
+        self.declare_parameter('pwm_hold', 800)
         self.declare_parameter('reset_delay', 2.0)
 
         self.servo_ch    = int(self.get_parameter('servo_channel').value)
