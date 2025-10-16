@@ -14,10 +14,7 @@ class DropCalculator(Node):
         
         # Parameters
         self.declare_parameter('gravity', 9.81)
-        self.declare_parameter('target_distance', 2.0)
-        self.declare_parameter('min_altitude', 10.0)
-        self.declare_parameter('max_altitude', 100.0)
-        self.declare_parameter('min_airspeed', 5.0)
+
         
         # Validate parameters
         self._validate_parameters()
@@ -43,7 +40,7 @@ class DropCalculator(Node):
         self.gcs_pub = self.create_publisher(StatusText, '/mavros/statustext/send', 10)
         
         self.get_logger().info('✅ Drop Calculator ready (waiting for trigger)')
-    
+
     def _validate_parameters(self):
         """Validate parameter ranges"""
         min_alt = self.get_parameter('min_altitude').value

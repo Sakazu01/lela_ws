@@ -32,23 +32,38 @@ class ColorDetectorTarp(Node):
             ('hfov_deg', 78.0),        # horizontal FOV (deg)
             ('altitude_m', 40.0),      # altitude (m); update at runtime if you can
             ('tarp_size_m', 5.0),      # tarp side (m)
-            ('area_tol', 4.0),         # accept [1/area_tol .. area_tol] × expected area (looser now)
+            ('area_tol', 2.5),         # TIGHTENED: accept [1/area_tol .. area_tol] × expected area
 
-            # Color/shape thresholds (loosened to avoid sticking)
-            ('ratio_percent', 105),    # 105 => 1.05; was 110 => 1.10
-            ('blue_h_min', 90), ('blue_h_max', 150),
-            ('red_h1_max', 15), ('red_h2_min', 165),  # red wraps: [0..red_h1_max] ∪ [red_h2_min..180]
-            ('sat_min', 60), ('val_min', 50),
-            ('min_area', 3000),        # absolute minimum blob area to consider (px)
-            ('kernel_size', 5),        # morphology kernel (odd, >=3)
-
+            # Color/shape thresholds - SIGNIFICANTLY TIGHTENED
+            ('ratio_percent', 125),    # TIGHTENED: 125 => 1.25 (was 105)
+            
+            # BLUE: Pure blue range only (avoid cyan/green)
+            ('blue_h_min', 100),       # TIGHTENED: was 90
+            ('blue_h_max', 130),       # TIGHTENED: was 150
+            
+            # RED: Tighter red ranges
+            ('red_h1_max', 10),        # TIGHTENED: was 15
+            ('red_h2_min', 170),       # TIGHTENED: was 165
+            
+            # Higher saturation/value for vivid colors only
+            ('sat_min', 100),          # TIGHTENED: was 60
+            ('val_min', 80),           # TIGHTENED: was 50
+            
+            ('min_area', 5000),        # INCREASED: minimum blob area (was 3000)
+            ('kernel_size', 7),        # INCREASED: stronger morphology
+            
             # Decision behavior
-            ('decision_margin', 0.0),  # no >5% margin; avoids bias to first-seen color
-            ('fallback_area_factor', 2.0),  # if Aexp gate fails, accept if area > factor*min_area
+            ('decision_margin', 0.0),  # NO MARGIN: immediate response
+            ('fallback_area_factor', 3.0),  # INCREASED: stricter fallback
+            
+            # Additional filtering
+            ('min_rectangularity', 0.7),    # NEW: minimum rectangularity
+            ('aspect_ratio_min', 0.7),      # NEW: tighter aspect ratio
+            ('aspect_ratio_max', 1.4),      # NEW: tighter aspect ratio
 
             # Status logging
-            ('status_log_period', 2.0),  # seconds; 0 = disable
-            ('use_area_weight', True),   # prefer area totals over frame counts at finalize
+            ('status_log_period', 2.0),
+            ('use_area_weight', True),
         ])
 
         image_topic  = self.get_parameter('image_topic').get_parameter_value().string_value
@@ -73,14 +88,14 @@ class ColorDetectorTarp(Node):
 
         self.status_period = float(self.get_parameter('status_log_period').value)
 
-        # Session state (no "unknown" counters; we ignore frames that aren't confidently red/blue)
+        # Session state
         self.detection_enabled: bool = False
         self.red_frames = 0
         self.blue_frames = 0
         self.red_area_sum = 0
         self.blue_area_sum = 0
-        self._frames_processed = 0     # total frames seen while enabled
-        self._frames_counted = 0       # frames that contributed to red/blue
+        self._frames_processed = 0
+        self._frames_counted = 0
         self._last_status_log = 0.0
 
         self.get_logger().info(
@@ -113,6 +128,11 @@ class ColorDetectorTarp(Node):
         Amin, Amax = Aexp / tol, Aexp * tol
         A_min_param = int(self.get_parameter('min_area').value)
         Amin = max(Amin, A_min_param)  # absolute minimum area
+        
+        # Get tighter aspect ratio and rectangularity limits
+        aspect_min = float(self.get_parameter('aspect_ratio_min').value)
+        aspect_max = float(self.get_parameter('aspect_ratio_max').value)
+        min_rect = float(self.get_parameter('min_rectangularity').value)
 
         best = None
         best_score = -1.0
@@ -121,10 +141,10 @@ class ColorDetectorTarp(Node):
             if area < Amin or area > Amax:
                 continue
             aspect = w / float(h)
-            if not (0.6 <= aspect <= 1.7):
+            if not (aspect_min <= aspect <= aspect_max):
                 continue
             rectangularity = area / float(w*h + 1e-6)  # 1.0 ~ perfect rectangle
-            if rectangularity < 0.6:
+            if rectangularity < min_rect:
                 continue
             # Score: prefer close-to-expected area + rectangularity
             area_score = 1.0 - abs(area - Aexp) / max(Aexp, area)
@@ -209,62 +229,77 @@ class ColorDetectorTarp(Node):
             self.get_logger().warn(f'cv_bridge failed: {e}')
             return
 
-        # --- robust masks: ratio + HSV (loosened) ---
-        ratio_pct = int(self.get_parameter('ratio_percent').value)   # e.g., 105
-        sat_min   = int(self.get_parameter('sat_min').value)         # e.g., 60
-        val_min   = int(self.get_parameter('val_min').value)         # e.g., 50
-        blue_hmin = int(self.get_parameter('blue_h_min').value)      # e.g., 90
-        blue_hmax = int(self.get_parameter('blue_h_max').value)      # e.g., 150
-        red_h1max = int(self.get_parameter('red_h1_max').value)      # e.g., 15
-        red_h2min = int(self.get_parameter('red_h2_min').value)      # e.g., 165
+        # --- TIGHTENED masks: stricter ratio + HSV ---
+        ratio_pct = int(self.get_parameter('ratio_percent').value)   # now 125
+        sat_min   = int(self.get_parameter('sat_min').value)         # now 100
+        val_min   = int(self.get_parameter('val_min').value)         # now 80
+        blue_hmin = int(self.get_parameter('blue_h_min').value)      # now 100
+        blue_hmax = int(self.get_parameter('blue_h_max').value)      # now 130
+        red_h1max = int(self.get_parameter('red_h1_max').value)      # now 10
+        red_h2min = int(self.get_parameter('red_h2_min').value)      # now 170
 
         B, G, R = cv2.split(frame)
+        
+        # Stronger color dominance required
         blue_ratio = (B.astype(np.int32) * 100) > ((R.astype(np.int32) + G.astype(np.int32)) * ratio_pct)
         red_ratio  = (R.astype(np.int32) * 100) > ((G.astype(np.int32) + B.astype(np.int32)) * ratio_pct)
-        blue_ratio = blue_ratio.astype(np.uint8) * 255
-        red_ratio  = red_ratio.astype(np.uint8) * 255
+        
+        # Additional filter: Blue must be significantly stronger than Red, and vice versa
+        blue_stronger = B.astype(np.int32) > (R.astype(np.int32) * 1.3)  # B > 1.3*R
+        red_stronger = R.astype(np.int32) > (B.astype(np.int32) * 1.3)   # R > 1.3*B
+        
+        blue_ratio = np.logical_and(blue_ratio, blue_stronger).astype(np.uint8) * 255
+        red_ratio = np.logical_and(red_ratio, red_stronger).astype(np.uint8) * 255
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         H, S, V = cv2.split(hsv)
         sat_mask = cv2.inRange(S, sat_min, 255)
         val_mask = cv2.inRange(V, val_min, 255)
 
+        # Tighter hue ranges
         red_h1 = cv2.inRange(H, 0, red_h1max)
         red_h2 = cv2.inRange(H, red_h2min, 180)
         blue_h = cv2.inRange(H, blue_hmin, blue_hmax)
 
+        # Combine all conditions
         red_mask  = cv2.bitwise_and(red_ratio,  cv2.bitwise_and(sat_mask, val_mask))
         red_mask  = cv2.bitwise_and(red_mask,   cv2.bitwise_or(red_h1, red_h2))
         blue_mask = cv2.bitwise_and(blue_ratio, cv2.bitwise_and(sat_mask, val_mask))
         blue_mask = cv2.bitwise_and(blue_mask,  blue_h)
 
-        # clean-up
+        # Stronger morphology for cleaner blobs
         red_mask  = cv2.morphologyEx(red_mask,  cv2.MORPH_OPEN,  self.kernel, iterations=2)
-        red_mask  = cv2.morphologyEx(red_mask,  cv2.MORPH_CLOSE, self.kernel, iterations=2)
+        red_mask  = cv2.morphologyEx(red_mask,  cv2.MORPH_CLOSE, self.kernel, iterations=3)
         blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN,  self.kernel, iterations=2)
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, self.kernel, iterations=2)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, self.kernel, iterations=3)
 
         # --- pick best candidate per color ---
         frame_w = frame.shape[1]
         best_red,  score_red  = self._best_component(red_mask,  frame_w)
         best_blue, score_blue = self._best_component(blue_mask, frame_w)
 
-        # Fallback if neither blob passed area gate but one color is clearly large
+        # Stricter fallback
         fallback_factor = float(self.get_parameter('fallback_area_factor').value)
         min_area = int(self.get_parameter('min_area').value)
         if best_red is None:
             red_area_total = int(np.count_nonzero(red_mask))
             if red_area_total > int(fallback_factor * min_area):
                 x, y, w, h = cv2.boundingRect((red_mask > 0).astype(np.uint8))
-                best_red, score_red = (x, y, w, h, red_area_total), 0.1
+                # Check aspect ratio even in fallback
+                aspect = w / float(h) if h > 0 else 0
+                if 0.7 <= aspect <= 1.4:
+                    best_red, score_red = (x, y, w, h, red_area_total), 0.05  # Lower score for fallback
+                    
         if best_blue is None:
             blue_area_total = int(np.count_nonzero(blue_mask))
             if blue_area_total > int(fallback_factor * min_area):
                 x, y, w, h = cv2.boundingRect((blue_mask > 0).astype(np.uint8))
-                best_blue, score_blue = (x, y, w, h, blue_area_total), 0.1
+                aspect = w / float(h) if h > 0 else 0
+                if 0.7 <= aspect <= 1.4:
+                    best_blue, score_blue = (x, y, w, h, blue_area_total), 0.05
 
-        # Decide (no positive margin; whichever scores higher this frame wins). Ignore unknowns.
-        margin = float(self.get_parameter('decision_margin').value)  # 0.0 recommended
+        # Decision without margin - highest score wins immediately
+        margin = float(self.get_parameter('decision_margin').value)  # 0.0 - no margin
         detected = None
         if best_red and (score_red >= score_blue * (1.0 + margin)):
             self.red_frames += 1
