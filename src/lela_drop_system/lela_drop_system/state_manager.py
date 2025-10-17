@@ -206,7 +206,7 @@ class StateManager(Node):
         super().__init__('state_manager')
         
         # Hard-coded drop waypoints (can be parameterized later)
-        self.drop_waypoints = [3, 6, 9]  # 🧩 Example list of drop waypoints
+        self.drop_waypoints = [2, 4, 6 ,8]  # 🧩 Example list of drop waypoints
         
         # Default detection window = 20s
         self.declare_parameter('detection_timeout', 20.0)
