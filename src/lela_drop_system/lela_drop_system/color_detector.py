@@ -30,36 +30,36 @@ class ColorDetectorTarp(Node):
 
             # Camera & scene geometry
             ('hfov_deg', 78.0),        # horizontal FOV (deg)
-            ('altitude_m', 40.0),      # altitude (m); update at runtime if you can
+            ('altitude_m', 75.0),      # altitude (m); update at runtime if you can
             ('tarp_size_m', 5.0),      # tarp side (m)
-            ('area_tol', 2.5),         # TIGHTENED: accept [1/area_tol .. area_tol] × expected area
+            ('area_tol', 3.5),         # TIGHTENED: accept [1/area_tol .. area_tol] × expected area
 
             # Color/shape thresholds - SIGNIFICANTLY TIGHTENED
-            ('ratio_percent', 125),    # TIGHTENED: 125 => 1.25 (was 105)
+            ('ratio_percent', 135),    # TIGHTENED: 125 => 1.25 (was 105)
             
             # BLUE: Pure blue range only (avoid cyan/green)
-            ('blue_h_min', 100),       # TIGHTENED: was 90
-            ('blue_h_max', 130),       # TIGHTENED: was 150
+            ('blue_h_min', 95),       # TIGHTENED: was 90
+            ('blue_h_max', 135),       # TIGHTENED: was 150
             
             # RED: Tighter red ranges
-            ('red_h1_max', 10),        # TIGHTENED: was 15
-            ('red_h2_min', 170),       # TIGHTENED: was 165
+            ('red_h1_max', 7),        # TIGHTENED: was 15
+            ('red_h2_min', 173),       # TIGHTENED: was 165
             
             # Higher saturation/value for vivid colors only
-            ('sat_min', 100),          # TIGHTENED: was 60
-            ('val_min', 80),           # TIGHTENED: was 50
+            ('sat_min', 65),          # TIGHTENED: was 60
+            ('val_min', 55),           # TIGHTENED: was 50
             
-            ('min_area', 1500),        # INCREASED: minimum blob area (was 3000)
-            ('kernel_size', 7),        # INCREASED: stronger morphology
+            ('min_area', 400),        # INCREASED: minimum blob area (was 3000)
+            ('kernel_size', 5),        # INCREASED: stronger morphology
             
             # Decision behavior
             ('decision_margin', 0.0),  # NO MARGIN: immediate response
-            ('fallback_area_factor', 3.0),  # INCREASED: stricter fallback
+            ('fallback_area_factor', 4.0),  # INCREASED: stricter fallback
             
             # Additional filtering
-            ('min_rectangularity', 0.7),    # NEW: minimum rectangularity
-            ('aspect_ratio_min', 0.7),      # NEW: tighter aspect ratio
-            ('aspect_ratio_max', 1.4),      # NEW: tighter aspect ratio
+            ('min_rectangularity', 0.60),    # NEW: minimum rectangularity
+            ('aspect_ratio_min', 0.65),      # NEW: tighter aspect ratio
+            ('aspect_ratio_max', 1.5),      # NEW: tighter aspect ratio
 
             # Status logging
             ('status_log_period', 2.0),
