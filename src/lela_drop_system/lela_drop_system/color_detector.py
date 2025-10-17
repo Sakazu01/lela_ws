@@ -49,7 +49,7 @@ class ColorDetectorTarp(Node):
             ('sat_min', 100),          # TIGHTENED: was 60
             ('val_min', 80),           # TIGHTENED: was 50
             
-            ('min_area', 3000),        # INCREASED: minimum blob area (was 3000)
+            ('min_area', 1500),        # INCREASED: minimum blob area (was 3000)
             ('kernel_size', 7),        # INCREASED: stronger morphology
             
             # Decision behavior

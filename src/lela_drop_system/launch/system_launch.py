@@ -40,8 +40,8 @@ def generate_launch_description():
             executable='state_manager.py',
             name='state_manager',
             parameters=[{
-                'drop_waypoint': 0,
-                'detection_timeout': 30.0,
+                'drop_waypoint': 999,
+                'detection_timeout': 10.0,
             }],
             output='screen'
         ),
