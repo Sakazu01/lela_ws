@@ -49,7 +49,7 @@ class ColorDetectorTarp(Node):
             ('sat_min', 100),          # TIGHTENED: was 60
             ('val_min', 80),           # TIGHTENED: was 50
             
-            ('min_area', 5000),        # INCREASED: minimum blob area (was 3000)
+            ('min_area', 3000),        # INCREASED: minimum blob area (was 3000)
             ('kernel_size', 7),        # INCREASED: stronger morphology
             
             # Decision behavior
@@ -207,138 +207,89 @@ class ColorDetectorTarp(Node):
 
     # ---------- Callbacks ----------
     def enable_cb(self, msg: Bool):
-        enable = bool(msg.data)
-        if enable == self.detection_enabled:
-            return
-        self.detection_enabled = enable
-        if enable:
+        if msg.data:
+            self.get_logger().info('🔵 Detection ENABLED, starting new session')
             self._reset_session()
-            self._last_status_log = 0.0
-            self.get_logger().info('🎥 Detection ENABLED (session started)')
-            self.send_to_gcs('Detection started')
+            self.detection_enabled = True
         else:
-            self.get_logger().info('⏸️ Detection DISABLED → finalizing…')
-            self._finalize_session()
+            if self.detection_enabled:
+                self.get_logger().info('🔴 Detection DISABLED, finalizing session')
+                self._finalize_session()
+            self.detection_enabled = False
 
     def image_cb(self, msg: Image):
+        self._frames_processed += 1
         if not self.detection_enabled:
             return
 
-        try:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            if frame is None or frame.size == 0:
-                return
-        except Exception as e:
-            self.get_logger().warn(f'cv_bridge failed: {e}')
-            return
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        frame_h, frame_w = frame.shape[:2]
 
-        # --- TIGHTENED masks: stricter ratio + HSV ---
-        ratio_pct = int(self.get_parameter('ratio_percent').value)   # now 125
-        sat_min   = int(self.get_parameter('sat_min').value)         # now 100
-        val_min   = int(self.get_parameter('val_min').value)         # now 80
-        blue_hmin = int(self.get_parameter('blue_h_min').value)      # now 100
-        blue_hmax = int(self.get_parameter('blue_h_max').value)      # now 130
-        red_h1max = int(self.get_parameter('red_h1_max').value)      # now 10
-        red_h2min = int(self.get_parameter('red_h2_min').value)      # now 170
-
-        B, G, R = cv2.split(frame)
-        
-        # Stronger color dominance required
-        blue_ratio = (B.astype(np.int32) * 100) > ((R.astype(np.int32) + G.astype(np.int32)) * ratio_pct)
-        red_ratio  = (R.astype(np.int32) * 100) > ((G.astype(np.int32) + B.astype(np.int32)) * ratio_pct)
-        
-        # Additional filter: Blue must be significantly stronger than Red, and vice versa
-        blue_stronger = B.astype(np.int32) > (R.astype(np.int32) * 1.3)  # B > 1.3*R
-        red_stronger = R.astype(np.int32) > (B.astype(np.int32) * 1.3)   # R > 1.3*B
-        
-        blue_ratio = np.logical_and(blue_ratio, blue_stronger).astype(np.uint8) * 255
-        red_ratio = np.logical_and(red_ratio, red_stronger).astype(np.uint8) * 255
-
+        # -----------------------
+        # === DETECTION LOGIC ===
+        # (Updated to follow code2 style: tighter HSV/morphology)
+        # -----------------------
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        H, S, V = cv2.split(hsv)
-        sat_mask = cv2.inRange(S, sat_min, 255)
-        val_mask = cv2.inRange(V, val_min, 255)
+        bgr_float = frame.astype(np.float32)
 
-        # Tighter hue ranges
-        red_h1 = cv2.inRange(H, 0, red_h1max)
-        red_h2 = cv2.inRange(H, red_h2min, 180)
-        blue_h = cv2.inRange(H, blue_hmin, blue_hmax)
+        # --- BLUE ---
+        blue_mask = cv2.inRange(hsv,
+            (int(self.get_parameter('blue_h_min').value),
+             int(self.get_parameter('sat_min').value),
+             int(self.get_parameter('val_min').value)),
+            (int(self.get_parameter('blue_h_max').value),
+             255, 255)
+        )
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, self.kernel)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, self.kernel)
+        blue_best, blue_score = self._best_component(blue_mask, frame_w)
 
-        # Combine all conditions
-        red_mask  = cv2.bitwise_and(red_ratio,  cv2.bitwise_and(sat_mask, val_mask))
-        red_mask  = cv2.bitwise_and(red_mask,   cv2.bitwise_or(red_h1, red_h2))
-        blue_mask = cv2.bitwise_and(blue_ratio, cv2.bitwise_and(sat_mask, val_mask))
-        blue_mask = cv2.bitwise_and(blue_mask,  blue_h)
+        # --- RED ---
+        red_mask1 = cv2.inRange(hsv,
+            (0, int(self.get_parameter('sat_min').value), int(self.get_parameter('val_min').value)),
+            (int(self.get_parameter('red_h1_max').value), 255, 255)
+        )
+        red_mask2 = cv2.inRange(hsv,
+            (int(self.get_parameter('red_h2_min').value), int(self.get_parameter('sat_min').value), int(self.get_parameter('val_min').value)),
+            (179, 255, 255)
+        )
+        red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, self.kernel)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, self.kernel)
+        red_best, red_score = self._best_component(red_mask, frame_w)
 
-        # Stronger morphology for cleaner blobs
-        red_mask  = cv2.morphologyEx(red_mask,  cv2.MORPH_OPEN,  self.kernel, iterations=2)
-        red_mask  = cv2.morphologyEx(red_mask,  cv2.MORPH_CLOSE, self.kernel, iterations=3)
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN,  self.kernel, iterations=2)
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, self.kernel, iterations=3)
-
-        # --- pick best candidate per color ---
-        frame_w = frame.shape[1]
-        best_red,  score_red  = self._best_component(red_mask,  frame_w)
-        best_blue, score_blue = self._best_component(blue_mask, frame_w)
-
-        # Stricter fallback
-        fallback_factor = float(self.get_parameter('fallback_area_factor').value)
-        min_area = int(self.get_parameter('min_area').value)
-        if best_red is None:
-            red_area_total = int(np.count_nonzero(red_mask))
-            if red_area_total > int(fallback_factor * min_area):
-                x, y, w, h = cv2.boundingRect((red_mask > 0).astype(np.uint8))
-                # Check aspect ratio even in fallback
-                aspect = w / float(h) if h > 0 else 0
-                if 0.7 <= aspect <= 1.4:
-                    best_red, score_red = (x, y, w, h, red_area_total), 0.05  # Lower score for fallback
-                    
-        if best_blue is None:
-            blue_area_total = int(np.count_nonzero(blue_mask))
-            if blue_area_total > int(fallback_factor * min_area):
-                x, y, w, h = cv2.boundingRect((blue_mask > 0).astype(np.uint8))
-                aspect = w / float(h) if h > 0 else 0
-                if 0.7 <= aspect <= 1.4:
-                    best_blue, score_blue = (x, y, w, h, blue_area_total), 0.05
-
-        # Decision without margin - highest score wins immediately
-        margin = float(self.get_parameter('decision_margin').value)  # 0.0 - no margin
-        detected = None
-        if best_red and (score_red >= score_blue * (1.0 + margin)):
-            self.red_frames += 1
-            self.red_area_sum += best_red[4]
-            self._frames_counted += 1
-            detected = 'red'
-        elif best_blue and (score_blue >= score_red * (1.0 + margin)):
+        # --- Count / sum for session ---
+        counted = False
+        if blue_best is not None:
             self.blue_frames += 1
-            self.blue_area_sum += best_blue[4]
+            self.blue_area_sum += blue_best[4]
+            counted = True
+        if red_best is not None:
+            self.red_frames += 1
+            self.red_area_sum += red_best[4]
+            counted = True
+        if counted:
             self._frames_counted += 1
-            detected = 'blue'
-        # else: neither confident → ignore this frame
 
-        self._frames_processed += 1
+        # --- Optional periodic log ---
+        import time
+        t_now = time.time()
+        if t_now - self._last_status_log > self.status_period:
+            self.get_logger().info(f'Frame={self._frames_processed}, counted={self._frames_counted}, R/B={self.red_frames}/{self.blue_frames}')
+            self._last_status_log = t_now
 
-        # Periodic status
-        if self.status_period > 0.0:
-            now = self.get_clock().now().nanoseconds / 1e9
-            if now - self._last_status_log >= self.status_period:
-                self._last_status_log = now
-                self.get_logger().info(
-                    f'[Session] processed={self._frames_processed}, counted={self._frames_counted} '
-                    f'| last={detected or "ignored"} | votes R/B={self.red_frames}/{self.blue_frames} '
-                    f'| area R/B={self.red_area_sum}/{self.blue_area_sum}'
-                )
 
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
     node = ColorDetectorTarp()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('🛑 Shutting down…')
+        node.get_logger().info('🛑 KeyboardInterrupt, shutting down')
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
