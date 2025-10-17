@@ -16,14 +16,14 @@ class DropCalculatorGPS(Node):
 
         # ===== PARAMETER =====
         self.declare_parameter('gravity', 9.81)
-        self.declare_parameter('target_lat', 0.0)
-        self.declare_parameter('target_lon', 0.0)
 
         # ===== STATE =====
         self.altitude = 0.0
         self.groundspeed = 0.0
         self.drone_lat = None
         self.drone_lon = None
+        self.target_lat = None
+        self.target_lon = None
         self.calculation_active = False
         self.drop_executed = False
 
@@ -33,6 +33,9 @@ class DropCalculatorGPS(Node):
         )
         self.gps_sub = self.create_subscription(
             NavSatFix, '/mavros/global_position/global', self.gps_callback, qos_profile_sensor_data
+        )
+        self.target_sub = self.create_subscription(
+            NavSatFix, '/target_coords', self.target_callback, qos_profile_sensor_data
         )
         self.calculate_sub = self.create_subscription(
             Bool, '/drop/calculate', self.calculate_callback, 10
@@ -49,6 +52,15 @@ class DropCalculatorGPS(Node):
     def gps_callback(self, msg: NavSatFix):
         self.drone_lat = msg.latitude
         self.drone_lon = msg.longitude
+
+    def target_callback(self, msg: NavSatFix):
+        """Dapat target koordinat dari Mission Monitor."""
+        self.target_lat = msg.latitude
+        self.target_lon = msg.longitude
+        self.get_logger().info(
+            f"🎯 Target update diterima dari Mission Monitor "
+            f"(lat: {self.target_lat:.7f}, lon: {self.target_lon:.7f})"
+        )
 
     def vfr_callback(self, msg: VfrHud):
         self.altitude = msg.altitude
@@ -67,11 +79,13 @@ class DropCalculatorGPS(Node):
         if self.drone_lat is None or self.drone_lon is None:
             self.get_logger().warn('⚠️ Waiting for GPS fix...')
             return
+        if self.target_lat is None or self.target_lon is None:
+            self.get_logger().warn('⚠️ Waiting for target coordinates...')
+            return
 
         self.get_logger().info('🚀 Drop calculation triggered!')
         self.send_to_gcs('Calculating GPS-based drop point...')
         self.calculation_active = True
-
         self.calculate_drop()
 
     # ------------------------------------------------------------------
@@ -80,23 +94,17 @@ class DropCalculatorGPS(Node):
         h = self.altitude
         v = self.groundspeed
 
-        h = (h * h) + 10
-        v = 0.2
-
         if h <= 0 or v <= 0:
             self.get_logger().warn('⚠️ Invalid flight data')
             self.calculation_active = False
             return
 
-        # Hitung waktu jatuh bebas
+        # Hitung waktu jatuh bebas & jarak mendatar
         t_fall = math.sqrt((2 * h) / g)
         lead_distance = v * t_fall
 
         # Hitung jarak ke target dari posisi GPS
-        target_lat = self.get_parameter('target_lat').value
-        target_lon = self.get_parameter('target_lon').value
-
-        current_distance = self.haversine(self.drone_lat, self.drone_lon, target_lat, target_lon)
+        current_distance = self.haversine(self.drone_lat, self.drone_lon, self.target_lat, self.target_lon)
 
         info = Vector3()
         info.x = current_distance
@@ -124,11 +132,9 @@ class DropCalculatorGPS(Node):
 
     # ------------------------------------------------------------------
     def monitor_distance(self):
-        if self.drop_executed or self.drone_lat is None:
+        if self.drop_executed or self.drone_lat is None or self.target_lat is None:
             return
 
-        target_lat = self.get_parameter('target_lat').value
-        target_lon = self.get_parameter('target_lon').value
         g = self.get_parameter('gravity').value
         h = self.altitude
         v = self.groundspeed
@@ -137,7 +143,7 @@ class DropCalculatorGPS(Node):
             return
 
         lead_distance = v * math.sqrt((2 * h) / g)
-        current_distance = self.haversine(self.drone_lat, self.drone_lon, target_lat, target_lon)
+        current_distance = self.haversine(self.drone_lat, self.drone_lon, self.target_lat, self.target_lon)
         self.get_logger().info('menunggu drop -1 detik')
         if current_distance <= lead_distance:
             self.execute_drop()
@@ -164,10 +170,8 @@ class DropCalculatorGPS(Node):
         phi2 = math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
-
         a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
         return R * c
 
 

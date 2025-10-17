@@ -56,8 +56,6 @@ def generate_launch_description():
             name='drop_calculator',
             parameters=[{
                 'gravity': 9.81,
-		    'target_lat': -0.8787417,  # contoh koordinat target
-                'target_lon': 100.3478323,
             }],
             output='screen'
         ),
